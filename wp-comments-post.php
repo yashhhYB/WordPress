@@ -59,7 +59,7 @@ $comment_data = array(
     'comment_approved'     => 0,  // Hold for moderation by default.
 );
 
-// Insert the comment into the database.
+// Insert the database.
 $comment_id = wp_insert_comment( wp_slash( $comment_data ) );
 
 if ( ! $comment_id ) {
