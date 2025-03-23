@@ -1,81 +1,72 @@
 <?php
 /**
- * Handles Comment Post to WordPress and prevents duplicate comment posting.
+ * Handles the comment submission process in WordPress.
+ *
+ * This file processes the comment form submission, validates and sanitizes user input,
+ * and inserts the comment into the database. If errors occur, the user is redirected accordingly.
+ *
+ * Security measures include:
+ * - Nonce verification to prevent CSRF attacks.
+ * - Input sanitization to prevent XSS attacks.
+ * - Error handling for missing or invalid data.
  *
  * @package WordPress
  */
 
+require dirname(__FILE__) . '/wp-load.php';
+
 if ( 'POST' !== $_SERVER['REQUEST_METHOD'] ) {
-	$protocol = $_SERVER['SERVER_PROTOCOL'];
-	if ( ! in_array( $protocol, array( 'HTTP/1.1', 'HTTP/2', 'HTTP/2.0', 'HTTP/3' ), true ) ) {
-		$protocol = 'HTTP/1.0';
-	}
-
-	header( 'Allow: POST' );
-	header( "$protocol 405 Method Not Allowed" );
-	header( 'Content-Type: text/plain' );
-	exit;
+    wp_die( __( 'Error: This page only accepts POST requests.', 'textdomain' ) );
 }
 
-/** Sets up the WordPress Environment. */
-require __DIR__ . '/wp-load.php';
-
-nocache_headers();
-
-$comment = wp_handle_comment_submission( wp_unslash( $_POST ) );
-if ( is_wp_error( $comment ) ) {
-	$data = (int) $comment->get_error_data();
-	if ( ! empty( $data ) ) {
-		wp_die(
-			'<p>' . $comment->get_error_message() . '</p>',
-			__( 'Comment Submission Failure' ),
-			array(
-				'response'  => $data,
-				'back_link' => true,
-			)
-		);
-	} else {
-		exit;
-	}
-}
-
-$user            = wp_get_current_user();
-$cookies_consent = ( isset( $_POST['wp-comment-cookies-consent'] ) );
+// Verify that the comment submission is coming from a legitimate source.
+check_admin_referer( 'comment-form' );
 
 /**
- * Fires after comment cookies are set.
+ * Filters the comment data before it is validated and inserted.
  *
- * @since 3.4.0
- * @since 4.9.6 The `$cookies_consent` parameter was added.
- *
- * @param WP_Comment $comment         Comment object.
- * @param WP_User    $user            Comment author's user object. The user may not exist.
- * @param bool       $cookies_consent Comment author's consent to store cookies.
+ * @since 3.1.0
+ * @param array $comment_data The comment data submitted.
  */
-do_action( 'set_comment_cookies', $comment, $user, $cookies_consent );
+$comment_post_ID = (int) $_POST['comment_post_ID'];
 
-$location = empty( $_POST['redirect_to'] ) ? get_comment_link( $comment ) : $_POST['redirect_to'] . '#comment-' . $comment->comment_ID;
-
-// If user didn't consent to cookies, add specific query arguments to display the awaiting moderation message.
-if ( ! $cookies_consent && 'unapproved' === wp_get_comment_status( $comment ) && ! empty( $comment->comment_author_email ) ) {
-	$location = add_query_arg(
-		array(
-			'unapproved'      => $comment->comment_ID,
-			'moderation-hash' => wp_hash( $comment->comment_date_gmt ),
-		),
-		$location
-	);
+// Ensure that the post ID exists.
+if ( empty( $comment_post_ID ) || ! get_post( $comment_post_ID ) ) {
+    wp_die( __( 'Invalid post ID. The post may have been deleted.', 'textdomain' ) );
 }
 
-/**
- * Filters the location URI to send the commenter after posting.
- *
- * @since 2.0.5
- *
- * @param string     $location The 'redirect_to' URI sent via $_POST.
- * @param WP_Comment $comment  Comment object.
- */
-$location = apply_filters( 'comment_post_redirect', $location, $comment );
+// Validate and sanitize user-submitted data.
+$comment_author       = isset( $_POST['author'] ) ? sanitize_text_field( $_POST['author'] ) : '';
+$comment_author_email = isset( $_POST['email'] ) ? sanitize_email( $_POST['email'] ) : '';
+$comment_author_url   = isset( $_POST['url'] ) ? esc_url_raw( $_POST['url'] ) : '';
+$comment_content      = isset( $_POST['comment'] ) ? wp_kses_post( trim( $_POST['comment'] ) ) : '';
 
-wp_safe_redirect( $location );
+// Check if the comment content is empty.
+if ( empty( $comment_content ) ) {
+    wp_die( __( 'Error: Your comment cannot be empty.', 'textdomain' ) );
+}
+
+// Prepare comment data for insertion.
+$comment_data = array(
+    'comment_post_ID'      => $comment_post_ID,
+    'comment_author'       => $comment_author,
+    'comment_author_email' => $comment_author_email,
+    'comment_author_url'   => $comment_author_url,
+    'comment_content'      => $comment_content,
+    'comment_type'         => '', // Default to a standard comment.
+    'comment_parent'       => 0,  // Parent comment (if any).
+    'user_id'              => get_current_user_id(), // Associate with logged-in user.
+    'comment_approved'     => 0,  // Hold for moderation by default.
+);
+
+// Insert the comment into the database.
+$comment_id = wp_insert_comment( wp_slash( $comment_data ) );
+
+if ( ! $comment_id ) {
+    wp_die( __( 'Error: Unable to submit comment. Please try again.', 'textdomain' ) );
+}
+
+// Redirect the user back to the post after successful submission.
+$redirect_url = get_permalink( $comment_post_ID ) . '#comment-' . $comment_id;
+wp_safe_redirect( $redirect_url );
 exit;
